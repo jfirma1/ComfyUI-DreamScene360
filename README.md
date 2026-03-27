@@ -88,6 +88,63 @@ ComfyUI-DreamScene360/dreamscene360_engine/pre_checkpoints/omnidata_dpt_depth_v2
 
 ---
 
+## RunPod Setup
+
+This node is tested on RunPod using the following Docker image:
+
+```
+runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
+```
+
+This image ships with CUDA 12.4, Python 3.11, and PyTorch 2.4 pre-installed, which matches the upstream DreamScene360 environment exactly.
+
+### First-Time Setup
+
+On a fresh pod, clone ComfyUI and this node, then run `install.py` once:
+
+```bash
+cd /workspace
+git clone https://github.com/comfyanonymous/ComfyUI.git
+cd ComfyUI && git checkout v0.13.0
+cd custom_nodes
+git clone https://github.com/YOUR_USERNAME/ComfyUI-DreamScene360.git comfyui-Dreamscene360
+cd comfyui-Dreamscene360
+python install.py
+```
+
+Download the checkpoint manually if `install.py` fails to fetch it automatically:
+```bash
+mkdir -p dreamscene360_engine/pre_checkpoints
+# Download omnidata_dpt_depth_v2.ckpt from the DreamScene360 dropbox link
+# and place it in dreamscene360_engine/pre_checkpoints/
+```
+
+### Pod Restart (Restoring Dependencies)
+
+RunPod wipes system libraries and compiled CUDA modules on every pod restart. The `install_dreamscene360.sh` script re-installs everything quickly without re-cloning or re-downloading the checkpoint:
+
+```bash
+bash /workspace/ComfyUI/custom_nodes/comfyui-Dreamscene360/install_dreamscene360.sh
+```
+
+### Recommended Startup Command
+
+Set this as your pod's start command to automatically restore dependencies, launch ComfyUI, and start JupyterLab on every restart:
+
+```bash
+bash -c "cd /workspace/ComfyUI && git checkout v0.13.0 && bash /workspace/ComfyUI/custom_nodes/comfyui-Dreamscene360/install_dreamscene360.sh && nohup python3 main.py --listen 0.0.0.0 --port=3000 > /tmp/comfyui.log 2>&1 & sleep 3 && jupyter lab --allow-root --ip=0.0.0.0 --port=8888 --no-browser --ServerApp.token='' --ServerApp.password='' --ServerApp.allow_origin='*' --ServerApp.disable_check_xsrf=True --ServerApp.allow_remote_access=True --LabApp.trust_xheaders=True --notebook-dir=/workspace"
+```
+
+This command:
+1. Checks out ComfyUI `v0.13.0`
+2. Runs `install_dreamscene360.sh` to restore system libs and CUDA submodules
+3. Starts ComfyUI headlessly on port `3000`
+4. Starts JupyterLab on port `8888`
+
+Make sure both ports (`3000` and `8888`) are exposed in your RunPod template.
+
+---
+
 ## Usage
 
 ### Workflow
