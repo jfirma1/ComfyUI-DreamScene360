@@ -127,7 +127,28 @@ RunPod wipes system libraries and compiled CUDA modules on every pod restart. Th
 bash /workspace/ComfyUI/custom_nodes/comfyui-Dreamscene360/install_dreamscene360.sh
 ```
 
-### Recommended Startup Command
+### Why numpy is pinned to 1.26.4
+
+This is one of the most fragile parts of the setup and the most common source of silent failures.
+
+DreamScene360's dependency chain spans several libraries (scipy, opencv, scikit-image, Open3D, PyTorch extensions) that were built and tested against numpy 1.x. NumPy 2.0, released in mid-2024, introduced breaking changes to its C API — compiled `.so` extensions built against 1.x will throw `AttributeError` or `ImportError` at runtime when numpy 2.x is present, often with cryptic messages like `module 'numpy' has no attribute 'bool'` or `numpy.core` import failures.
+
+The problem is made worse by pip's dependency resolver: installing any package that lists `numpy>=1.0` as a requirement (which is almost all of them) can silently upgrade numpy to 2.x, breaking everything that was compiled against 1.x. This can happen mid-install if packages are resolved in the wrong order.
+
+The fix in `install_dreamscene360.sh` is intentional — `numpy==1.26.4` is force-reinstalled as the **absolute last pip command** in the script, after everything else is installed. This ensures nothing can pull it back up to 2.x afterward. If you add any new pip installs to the script, they must go **before** the numpy pin, never after.
+
+If you see import errors after a pod restart even though the script ran successfully, numpy version drift is the first thing to check:
+
+```bash
+python3 -c "import numpy; print(numpy.__version__)"
+# Should print: 1.26.4
+```
+
+If it prints anything starting with `2.`, re-run the script or manually pin it:
+
+```bash
+pip install --break-system-packages --force-reinstall "numpy==1.26.4"
+```
 
 Set this as your pod's start command to automatically restore dependencies, launch ComfyUI, and start JupyterLab on every restart:
 
