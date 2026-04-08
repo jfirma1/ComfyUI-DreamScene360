@@ -1,8 +1,15 @@
 """
-ComfyUI-DreamScene360 Nodes
+ComfyUI-DreamScene360 Node
 
 Takes a 360° panorama and produces a gap-filled POINTCLOUD via
-DreamScene360's Gaussian Splatting pipeline.
+DreamScene360 (TingtingLiao unofficial implementation).
+
+The POINTCLOUD connects to a 6DOF Camera's pointcloud input, which renders
+directly from the 3D points — giving full coverage behind objects, under
+furniture, around corners.
+
+Engine CLI (TingtingLiao version):
+  python main.py input=pano.jpg prompt="a room" iters=3000 outdir=logs
 
 Output PLY locations:
   {outdir}/{scene_name}/pointcloud.ply      (initial aligned point cloud)
@@ -12,6 +19,7 @@ Output PLY locations:
 import os
 import sys
 import uuid
+import struct
 import subprocess
 import time
 import glob
@@ -45,7 +53,7 @@ def tensor_to_pil(tensor):
 def find_gs_ply(log_dir, scene_name):
     """
     Find the trained Gaussian PLY in a DreamScene360 output dir.
-    
+
     Checks for (in priority order):
       1. {log_dir}/{scene_name}_gs.ply  (final trained Gaussians)
       2. {log_dir}/pointcloud.ply       (initial aligned point cloud)
@@ -64,7 +72,6 @@ def find_gs_ply(log_dir, scene_name):
     # Fallback: any PLY
     plys = glob.glob(os.path.join(log_dir, "*.ply"))
     if plys:
-        # Prefer _gs.ply files
         gs_files = [p for p in plys if p.endswith("_gs.ply")]
         return gs_files[0] if gs_files else plys[0]
 
@@ -128,6 +135,52 @@ def load_gaussian_ply(ply_path, opacity_threshold=0.05):
     return xyz, colors, opacity
 
 
+def write_ply(path, points, colors):
+    """
+    Write XYZ+RGB point cloud to a binary little-endian PLY file.
+
+    Uses vectorized numpy packing — fast even for 500k+ points.
+
+    Args:
+        path:   output file path (str)
+        points: np.ndarray (N, 3) float32  XYZ
+        colors: np.ndarray (N, 3) float32  RGB [0, 1]
+    """
+    N = points.shape[0]
+    rgb_u8 = (np.clip(colors, 0.0, 1.0) * 255).astype(np.uint8)
+
+    # Pack each vertex as: x(f32) y(f32) z(f32) r(u8) g(u8) b(u8) = 15 bytes
+    # Build a structured array so numpy can do this in one shot
+    dtype = np.dtype([
+        ('x', '<f4'), ('y', '<f4'), ('z', '<f4'),
+        ('red', 'u1'), ('green', 'u1'), ('blue', 'u1'),
+    ])
+    vertex_data = np.empty(N, dtype=dtype)
+    vertex_data['x'] = points[:, 0].astype(np.float32)
+    vertex_data['y'] = points[:, 1].astype(np.float32)
+    vertex_data['z'] = points[:, 2].astype(np.float32)
+    vertex_data['red']   = rgb_u8[:, 0]
+    vertex_data['green'] = rgb_u8[:, 1]
+    vertex_data['blue']  = rgb_u8[:, 2]
+
+    header = (
+        "ply\n"
+        "format binary_little_endian 1.0\n"
+        f"element vertex {N}\n"
+        "property float x\n"
+        "property float y\n"
+        "property float z\n"
+        "property uchar red\n"
+        "property uchar green\n"
+        "property uchar blue\n"
+        "end_header\n"
+    )
+
+    with open(path, "wb") as f:
+        f.write(header.encode("utf-8"))
+        f.write(vertex_data.tobytes())
+
+
 # ---------------------------------------------------------------------------
 # Node: DreamScene360 Panorama → Pointcloud
 # ---------------------------------------------------------------------------
@@ -135,12 +188,12 @@ def load_gaussian_ply(ply_path, opacity_threshold=0.05):
 class DreamScene360PanoToPointcloud:
     """
     Runs DreamScene360 on a 360° panorama to produce a gap-filled
-    POINTCLOUD with geometry inferred behind occluded regions.
+    POINTCLOUD with geometry behind objects.
 
     Outputs:
-      - pointcloud            → 3D point cloud dict (points, colors, ply_path)
-      - panorama_passthrough  → original panorama IMAGE passed through
-      - depth_passthrough     → original depth_map IMAGE passed through
+      - pointcloud           → connect to 6DOF Camera "pointcloud" input
+      - panorama_passthrough → connect to 6DOF Camera "image"
+      - depth_passthrough    → connect to 6DOF Camera "depth_map"
     """
 
     @classmethod
@@ -161,6 +214,11 @@ class DreamScene360PanoToPointcloud:
                 }),
             },
             "optional": {
+                "prompt": ("STRING", {
+                    "default": "a room",
+                    "tooltip": "Scene description. Used by DreamScene360 for "
+                               "semantic guidance during optimization."
+                }),
                 "opacity_threshold": ("FLOAT", {
                     "default": 0.05,
                     "min": 0.0, "max": 0.5, "step": 0.01,
@@ -187,7 +245,7 @@ class DreamScene360PanoToPointcloud:
     CATEGORY = "3D/DreamScene360"
 
     def process(self, panorama, depth_map, scene_name, iterations,
-                opacity_threshold=0.05, max_points=500000,
+                prompt="a room", opacity_threshold=0.05, max_points=500000,
                 upscale=False, skip_if_exists=True):
 
         # 1. Validate engine
@@ -207,7 +265,6 @@ class DreamScene360PanoToPointcloud:
         scene_name = scene_name.strip()
 
         # DreamScene360 uses {outdir}/{save_path}/ as log dir
-        # save_path defaults to the prompt, but we override it
         log_dir = os.path.join(OUTPUT_DIR, scene_name)
 
         # 3. Check cache
@@ -248,7 +305,6 @@ class DreamScene360PanoToPointcloud:
             for line in proc.stdout:
                 line = line.strip()
                 if line:
-                    # Print key progress lines
                     if any(k in line.lower() for k in
                            ["step", "iter", "loss", "point", "saving",
                             "error", "exception", "traceback", "depth",
@@ -269,7 +325,6 @@ class DreamScene360PanoToPointcloud:
 
         # 6. Load PLY
         if not existing_ply:
-            # List what's actually in the log dir for debugging
             if os.path.isdir(log_dir):
                 contents = os.listdir(log_dir)
                 print(f"[DreamScene360] Log dir contents: {contents}")
@@ -304,7 +359,7 @@ class DreamScene360PanoToPointcloud:
 # ---------------------------------------------------------------------------
 
 class LoadGaussianPLY:
-    """Load a pre-trained 3D Gaussian Splatting PLY file as a POINTCLOUD."""
+    """Load a pre-trained Gaussian PLY → POINTCLOUD for 6DOF camera."""
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -347,15 +402,76 @@ class LoadGaussianPLY:
 
 
 # ---------------------------------------------------------------------------
+# Node: Save Pointcloud
+# ---------------------------------------------------------------------------
+
+class SavePointcloud:
+    """
+    Save a POINTCLOUD to a PLY file on disk.
+
+    Useful for persisting a subsampled or filtered cloud produced by
+    DreamScene360PanoToPointcloud or LoadGaussianPLY.
+
+    The output PLY uses standard RGB vertex colors (not SH coefficients),
+    so it can be opened directly in Open3D, MeshLab, CloudCompare, etc.
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "pointcloud": ("POINTCLOUD",),
+            },
+            "optional": {
+                "output_path": ("STRING", {
+                    "default": "",
+                    "tooltip": "Full path for the saved PLY file. "
+                               "Leave blank to auto-generate a timestamped "
+                               "file in the node's output directory."
+                }),
+            }
+        }
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("ply_path",)
+    OUTPUT_NODE = True
+    FUNCTION = "save"
+    CATEGORY = "3D/DreamScene360"
+
+    def save(self, pointcloud, output_path=""):
+        points = pointcloud["points"].cpu().numpy()   # (N, 3)
+        colors = pointcloud["colors"].cpu().numpy()   # (N, 3) float [0, 1]
+
+        if not output_path or not output_path.strip():
+            os.makedirs(OUTPUT_DIR, exist_ok=True)
+            output_path = os.path.join(
+                OUTPUT_DIR,
+                f"pointcloud_{uuid.uuid4().hex[:8]}.ply"
+            )
+
+        # Ensure the target directory exists
+        os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+
+        write_ply(output_path, points, colors)
+
+        N = points.shape[0]
+        print(f"[DreamScene360] Saved PLY: {output_path} ({N:,} points)")
+
+        return (output_path,)
+
+
+# ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
 
 NODE_CLASS_MAPPINGS = {
     "DreamScene360_PanoToPointcloud": DreamScene360PanoToPointcloud,
-    "DreamScene360_LoadGaussianPLY": LoadGaussianPLY,
+    "DreamScene360_LoadGaussianPLY":  LoadGaussianPLY,
+    "DreamScene360_SavePointcloud":   SavePointcloud,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "DreamScene360_PanoToPointcloud": "DreamScene360 Pano to Pointcloud",
-    "DreamScene360_LoadGaussianPLY": "Load Gaussian PLY",
+    "DreamScene360_LoadGaussianPLY":  "Load Gaussian PLY",
+    "DreamScene360_SavePointcloud":   "Save Pointcloud",
 }
