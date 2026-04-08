@@ -31,6 +31,7 @@ The output is a standard 3DGS `.ply` file (SH DC coefficients for color) plus a 
 |------|-------------|
 | **DreamScene360 Pano to Pointcloud** | Main node. Runs the full pipeline on a panorama + depth map. |
 | **Load Gaussian PLY** | Utility. Loads any pre-existing 3DGS `.ply` directly as a POINTCLOUD. |
+|**Save Point Cloud** | Utility. Saves POINTCLOUD to disk. |
 
 ---
 
