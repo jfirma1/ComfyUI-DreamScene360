@@ -41,7 +41,7 @@ The output is a standard 3DGS `.ply` file (SH DC coefficients for color) plus a 
 
 ```bash
 cd /path/to/ComfyUI/custom_nodes
-git clone https://github.com/YOUR_USERNAME/ComfyUI-DreamScene360.git
+git clone https://github.com/jfirma1/ComfyUI-DreamScene360.git
 cd ComfyUI-DreamScene360
 python install.py
 ```
@@ -53,7 +53,7 @@ python install.py
 ```bash
 # 1. Clone this node
 cd /path/to/ComfyUI/custom_nodes
-git clone https://github.com/YOUR_USERNAME/ComfyUI-DreamScene360.git
+git clone https://github.com/jfirma1/ComfyUI-DreamScene360.git
 cd ComfyUI-DreamScene360
 
 # 2. Clone the upstream engine
@@ -108,7 +108,7 @@ cd /workspace
 git clone https://github.com/comfyanonymous/ComfyUI.git
 cd ComfyUI && git checkout v0.13.0
 cd custom_nodes
-git clone https://github.com/YOUR_USERNAME/ComfyUI-DreamScene360.git comfyui-Dreamscene360
+git clone https://github.com/jfirma1/ComfyUI-DreamScene360.git comfyui-Dreamscene360
 cd comfyui-Dreamscene360
 python install.py
 ```
